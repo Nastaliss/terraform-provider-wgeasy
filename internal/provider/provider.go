@@ -72,6 +72,12 @@ func (p *wgeasyProvider) Configure(ctx context.Context, req provider.ConfigureRe
 			"The wg-easy endpoint must be set in the provider configuration or via the WGEASY_ENDPOINT environment variable.",
 		)
 	}
+	if username == "" {
+		resp.Diagnostics.AddError(
+			"Missing username",
+			"The wg-easy username must be set in the provider configuration or via the WGEASY_USERNAME environment variable.",
+		)
+	}
 	if password == "" {
 		resp.Diagnostics.AddError(
 			"Missing password",

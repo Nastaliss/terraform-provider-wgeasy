@@ -300,8 +300,8 @@ func TestAutoReloginOn401(t *testing.T) {
 	if len(clients) != 1 {
 		t.Fatalf("expected 1 client, got %d", len(clients))
 	}
-	if loginCount != 1 {
-		t.Errorf("expected 1 login attempt, got %d", loginCount)
+	if loginCount != 2 {
+		t.Errorf("expected 2 login attempts (initial + retry after 401), got %d", loginCount)
 	}
 	if callCount != 2 {
 		t.Errorf("expected 2 API calls (1 failed + 1 retry), got %d", callCount)

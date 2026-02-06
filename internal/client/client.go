@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
+	"sync"
 )
 
 // WGEasyClient is the HTTP client for the wg-easy REST API.
@@ -17,6 +18,8 @@ type WGEasyClient struct {
 	username   string
 	password   string
 	httpClient *http.Client
+	loginMu    sync.Mutex // Serializes login attempts
+	loggedIn   bool       // Tracks if we've successfully logged in
 }
 
 // NewWGEasyClient creates a new API client for wg-easy.
@@ -27,9 +30,9 @@ func NewWGEasyClient(endpoint, username, password string) (*WGEasyClient, error)
 	}
 
 	return &WGEasyClient{
-		endpoint: strings.TrimRight(endpoint, "/"),
-		username: username,
-		password: password,
+		endpoint:   strings.TrimRight(endpoint, "/"),
+		username:   username,
+		password:   password,
 		httpClient: &http.Client{
 			Jar: jar,
 		},
@@ -47,7 +50,15 @@ func (c *WGEasyClient) login() error {
 		return fmt.Errorf("marshaling login request: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(c.endpoint+"/api/session", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.endpoint+"/api/session", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "terraform-provider-wgeasy/1.0")
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("login request failed: %w", err)
 	}
@@ -63,17 +74,48 @@ func (c *WGEasyClient) login() error {
 	return nil
 }
 
+// ensureLoggedIn performs login if not already authenticated.
+// Uses mutex to prevent concurrent login attempts.
+func (c *WGEasyClient) ensureLoggedIn() error {
+	c.loginMu.Lock()
+	defer c.loginMu.Unlock()
+
+	if c.loggedIn {
+		return nil
+	}
+
+	if err := c.login(); err != nil {
+		return err
+	}
+	c.loggedIn = true
+	return nil
+}
+
 // doRequest performs an HTTP request with automatic re-login on 401.
 func (c *WGEasyClient) doRequest(method, path string, body interface{}) (*http.Response, error) {
+	// Ensure we're logged in before making requests
+	if err := c.ensureLoggedIn(); err != nil {
+		return nil, err
+	}
+
 	resp, err := c.doRequestOnce(method, path, body)
 	if err != nil {
 		return nil, err
 	}
 
-	// If we get 401, try to re-login and retry once.
+	// If we get 401, session expired - re-login and retry once.
 	if resp.StatusCode == http.StatusUnauthorized {
 		_ = resp.Body.Close()
-		if err := c.login(); err != nil {
+
+		c.loginMu.Lock()
+		c.loggedIn = false
+		err := c.login()
+		if err == nil {
+			c.loggedIn = true
+		}
+		c.loginMu.Unlock()
+
+		if err != nil {
 			return nil, err
 		}
 		return c.doRequestOnce(method, path, body)
@@ -97,6 +139,8 @@ func (c *WGEasyClient) doRequestOnce(method, path string, body interface{}) (*ht
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
+	req.Header.Set("User-Agent", "terraform-provider-wgeasy/1.0")
+	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
