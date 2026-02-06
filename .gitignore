@@ -1,0 +1,8 @@
+terraform-provider-wgeasy
+*.exe
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraformrc
+crash.log
