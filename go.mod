@@ -1,6 +1,6 @@
 module github.com/Nastaliss/terraform-provider-wgeasy
 
-go 1.22.0
+go 1.25
 
 require github.com/hashicorp/terraform-plugin-framework v1.13.0
 
