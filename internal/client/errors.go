@@ -1,3 +1,4 @@
+// Package client provides the HTTP client for interacting with the wg-easy REST API.
 package client
 
 import "fmt"

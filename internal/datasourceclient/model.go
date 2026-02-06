@@ -1,4 +1,5 @@
-package datasource_client
+// Package datasourceclient implements the wgeasy_client and wgeasy_clients data sources.
+package datasourceclient
 
 import (
 	"context"
@@ -69,28 +70,16 @@ func mapClientToModel(ctx context.Context, apiClient *client.Client, model *clie
 		model.ServerEndpoint = types.StringNull()
 	}
 
-	// Ensure nil slices become empty lists (not null) for consistency.
-	allowedIPsSlice := apiClient.AllowedIPs
-	if allowedIPsSlice == nil {
-		allowedIPsSlice = []string{}
-	}
-	allowedIPs, d := types.ListValueFrom(ctx, types.StringType, allowedIPsSlice)
-	diags.Append(d...)
-	model.AllowedIPs = allowedIPs
+	model.AllowedIPs = sliceToList(ctx, apiClient.AllowedIPs, diags)
+	model.ServerAllowedIPs = sliceToList(ctx, apiClient.ServerAllowedIPs, diags)
+	model.DNS = sliceToList(ctx, apiClient.DNS, diags)
+}
 
-	serverAllowedIPsSlice := apiClient.ServerAllowedIPs
-	if serverAllowedIPsSlice == nil {
-		serverAllowedIPsSlice = []string{}
+func sliceToList(ctx context.Context, slice []string, diags *diag.Diagnostics) types.List {
+	if slice == nil {
+		slice = []string{}
 	}
-	serverAllowedIPs, d := types.ListValueFrom(ctx, types.StringType, serverAllowedIPsSlice)
+	list, d := types.ListValueFrom(ctx, types.StringType, slice)
 	diags.Append(d...)
-	model.ServerAllowedIPs = serverAllowedIPs
-
-	dnsSlice := apiClient.DNS
-	if dnsSlice == nil {
-		dnsSlice = []string{}
-	}
-	dns, d := types.ListValueFrom(ctx, types.StringType, dnsSlice)
-	diags.Append(d...)
-	model.DNS = dns
+	return list
 }

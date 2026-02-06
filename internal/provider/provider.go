@@ -1,3 +1,4 @@
+// Package provider implements the wg-easy Terraform provider.
 package provider
 
 import (
@@ -5,8 +6,8 @@ import (
 	"os"
 
 	"github.com/Nastaliss/terraform-provider-wgeasy/internal/client"
-	"github.com/Nastaliss/terraform-provider-wgeasy/internal/datasource_client"
-	"github.com/Nastaliss/terraform-provider-wgeasy/internal/resource_client"
+	"github.com/Nastaliss/terraform-provider-wgeasy/internal/datasourceclient"
+	"github.com/Nastaliss/terraform-provider-wgeasy/internal/resourceclient"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
@@ -24,6 +25,7 @@ type wgeasyProviderModel struct {
 	Password types.String `tfsdk:"password"`
 }
 
+// New creates a new wg-easy provider instance.
 func New() provider.Provider {
 	return &wgeasyProvider{}
 }
@@ -92,14 +94,14 @@ func (p *wgeasyProvider) Configure(ctx context.Context, req provider.ConfigureRe
 
 func (p *wgeasyProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
-		resource_client.NewClientResource,
+		resourceclient.NewClientResource,
 	}
 }
 
 func (p *wgeasyProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
-		datasource_client.NewClientDataSource,
-		datasource_client.NewClientsDataSource,
+		datasourceclient.NewClientDataSource,
+		datasourceclient.NewClientsDataSource,
 	}
 }
 

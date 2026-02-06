@@ -1,4 +1,5 @@
-package resource_client
+// Package resourceclient implements the wgeasy_client resource for the Terraform provider.
+package resourceclient
 
 import (
 	"github.com/hashicorp/terraform-plugin-framework/types"

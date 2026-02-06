@@ -1,3 +1,4 @@
+// Package client provides the HTTP client for interacting with the wg-easy REST API.
 package client
 
 import (
@@ -71,7 +72,7 @@ func (c *WGEasyClient) doRequest(method, path string, body interface{}) (*http.R
 
 	// If we get 401, try to re-login and retry once.
 	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err := c.login(); err != nil {
 			return nil, err
 		}
@@ -125,7 +126,6 @@ func (c *WGEasyClient) GetClients() ([]Client, error) {
 	if err := json.Unmarshal(body, &clients); err != nil {
 		return nil, fmt.Errorf("decoding clients response: %w (body: %s)", err, string(body[:min(500, len(body))]))
 	}
-
 
 	return clients, nil
 }

@@ -1,4 +1,5 @@
-package resource_client
+// Package resourceclient implements the wgeasy_client resource for the Terraform provider.
+package resourceclient
 
 import (
 	"context"
@@ -28,6 +29,7 @@ type clientResource struct {
 	apiClient *client.WGEasyClient
 }
 
+// NewClientResource creates a new wgeasy_client resource instance.
 func NewClientResource() resource.Resource {
 	return &clientResource{}
 }
@@ -246,7 +248,7 @@ func (r *clientResource) Create(ctx context.Context, req resource.CreateRequest,
 			resp.Diagnostics.AddError("Error reading client after creation", err.Error())
 			return
 		}
-		updateReq := buildUpdateRequestFromCurrent(ctx, plan, current)
+		updateReq := buildUpdateRequest(ctx, plan, current)
 		_, err = r.apiClient.UpdateClient(clientID, updateReq)
 		if err != nil {
 			resp.Diagnostics.AddError("Error updating client after creation", err.Error())
@@ -314,7 +316,7 @@ func (r *clientResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	updateReq := buildUpdateRequestFromCurrent(ctx, plan, current)
+	updateReq := buildUpdateRequest(ctx, plan, current)
 
 	_, err = r.apiClient.UpdateClient(state.ID.ValueString(), updateReq)
 	if err != nil {
@@ -357,24 +359,40 @@ func (r *clientResource) ImportState(ctx context.Context, req resource.ImportSta
 
 // needsUpdate returns true if the plan has optional fields that need a follow-up update call.
 func needsUpdate(plan clientResourceModel) bool {
-	// Check if list fields have non-empty values.
-	hasAllowedIPs := !plan.AllowedIPs.IsNull() && !plan.AllowedIPs.IsUnknown() && len(plan.AllowedIPs.Elements()) > 0
-	hasServerAllowedIPs := !plan.ServerAllowedIPs.IsNull() && !plan.ServerAllowedIPs.IsUnknown() && len(plan.ServerAllowedIPs.Elements()) > 0
-	hasDNS := !plan.DNS.IsNull() && !plan.DNS.IsUnknown() && len(plan.DNS.Elements()) > 0
-
-	return hasAllowedIPs ||
-		hasServerAllowedIPs ||
-		hasDNS ||
-		(!plan.MTU.IsNull() && !plan.MTU.IsUnknown()) ||
-		(!plan.PersistentKeepalive.IsNull() && !plan.PersistentKeepalive.IsUnknown()) ||
-		(!plan.ServerEndpoint.IsNull() && !plan.ServerEndpoint.IsUnknown()) ||
-		(!plan.Enabled.IsNull() && !plan.Enabled.IsUnknown() && !plan.Enabled.ValueBool())
+	if hasNonEmptyList(plan.AllowedIPs) || hasNonEmptyList(plan.ServerAllowedIPs) || hasNonEmptyList(plan.DNS) {
+		return true
+	}
+	if isSetInt64(plan.MTU) || isSetInt64(plan.PersistentKeepalive) || isSetString(plan.ServerEndpoint) {
+		return true
+	}
+	if !plan.Enabled.IsNull() && !plan.Enabled.IsUnknown() && !plan.Enabled.ValueBool() {
+		return true
+	}
+	return false
 }
 
-// buildUpdateRequestFromCurrent builds an update request starting from the current API state,
+func hasNonEmptyList(list types.List) bool {
+	return !list.IsNull() && !list.IsUnknown() && len(list.Elements()) > 0
+}
+
+func isSetInt64(val types.Int64) bool {
+	return !val.IsNull() && !val.IsUnknown()
+}
+
+func isSetString(val types.String) bool {
+	return !val.IsNull() && !val.IsUnknown()
+}
+
+// buildUpdateRequest builds an update request starting from the current API state,
 // then overlays any values from the plan.
-func buildUpdateRequestFromCurrent(ctx context.Context, plan clientResourceModel, current *client.Client) client.UpdateClientRequest {
-	updateReq := client.UpdateClientRequest{
+func buildUpdateRequest(ctx context.Context, plan clientResourceModel, current *client.Client) client.UpdateClientRequest {
+	req := initUpdateRequestFromCurrent(current)
+	applyPlanToUpdateRequest(ctx, plan, &req)
+	return req
+}
+
+func initUpdateRequestFromCurrent(current *client.Client) client.UpdateClientRequest {
+	return client.UpdateClientRequest{
 		Name:                current.Name,
 		Enabled:             current.Enabled,
 		IPv4Address:         current.IPv4Address,
@@ -391,95 +409,81 @@ func buildUpdateRequestFromCurrent(ctx context.Context, plan clientResourceModel
 		JC:                  current.JC,
 		JMin:                current.JMin,
 		JMax:                current.JMax,
-		// Optional pointer fields - pass through as-is (nil means omit)
-		ServerEndpoint: current.ServerEndpoint,
-		ExpiresAt:      current.ExpiresAt,
-		I1:             current.I1,
-		I2:             current.I2,
-		I3:             current.I3,
-		I4:             current.I4,
-		I5:             current.I5,
+		ServerEndpoint:      current.ServerEndpoint,
+		ExpiresAt:           current.ExpiresAt,
+		I1:                  current.I1,
+		I2:                  current.I2,
+		I3:                  current.I3,
+		I4:                  current.I4,
+		I5:                  current.I5,
 	}
+}
 
-	// Overlay plan values.
-	updateReq.Name = plan.Name.ValueString()
-	updateReq.Enabled = plan.Enabled.ValueBool()
+func applyPlanToUpdateRequest(ctx context.Context, plan clientResourceModel, req *client.UpdateClientRequest) {
+	req.Name = plan.Name.ValueString()
+	req.Enabled = plan.Enabled.ValueBool()
 
-	if !plan.ExpiresAt.IsNull() && !plan.ExpiresAt.IsUnknown() {
+	if isSetString(plan.ExpiresAt) {
 		v := plan.ExpiresAt.ValueString()
-		updateReq.ExpiresAt = &v
+		req.ExpiresAt = &v
 	}
 
-	if !plan.AllowedIPs.IsNull() && !plan.AllowedIPs.IsUnknown() {
-		var ips []string
-		plan.AllowedIPs.ElementsAs(ctx, &ips, false)
-		if len(ips) > 0 {
-			updateReq.AllowedIPs = ips
-		} else {
-			// Empty list means "use global config" - send null to API
-			updateReq.AllowedIPs = nil
-		}
-	}
+	applyListField(ctx, plan.AllowedIPs, &req.AllowedIPs)
+	applyListField(ctx, plan.ServerAllowedIPs, &req.ServerAllowedIPs)
+	applyDNSField(ctx, plan.DNS, &req.DNS)
 
-	if !plan.ServerAllowedIPs.IsNull() && !plan.ServerAllowedIPs.IsUnknown() {
-		var ips []string
-		plan.ServerAllowedIPs.ElementsAs(ctx, &ips, false)
-		if len(ips) > 0 {
-			updateReq.ServerAllowedIPs = ips
-		} else {
-			// Empty list means "use global config" - send null to API
-			updateReq.ServerAllowedIPs = nil
-		}
-	}
+	applyInt64Field(plan.MTU, &req.MTU)
+	applyInt64Field(plan.PersistentKeepalive, &req.PersistentKeepalive)
+	applyStringPtrField(plan.ServerEndpoint, &req.ServerEndpoint)
+	applyStringField(plan.PreUp, &req.PreUp)
+	applyStringField(plan.PostUp, &req.PostUp)
+	applyStringField(plan.PreDown, &req.PreDown)
+	applyStringField(plan.PostDown, &req.PostDown)
+	applyInt64Field(plan.JC, &req.JC)
+	applyInt64Field(plan.JMin, &req.JMin)
+	applyInt64Field(plan.JMax, &req.JMax)
+}
 
-	if !plan.DNS.IsNull() && !plan.DNS.IsUnknown() {
-		var dns []string
-		plan.DNS.ElementsAs(ctx, &dns, false)
-		updateReq.DNS = dns
+func applyListField(ctx context.Context, list types.List, target *[]string) {
+	if list.IsNull() || list.IsUnknown() {
+		return
 	}
-
-	if !plan.MTU.IsNull() && !plan.MTU.IsUnknown() {
-		updateReq.MTU = plan.MTU.ValueInt64()
+	var values []string
+	list.ElementsAs(ctx, &values, false)
+	if len(values) > 0 {
+		*target = values
+	} else {
+		// Empty list means "use global config" - send null to API.
+		*target = nil
 	}
+}
 
-	if !plan.PersistentKeepalive.IsNull() && !plan.PersistentKeepalive.IsUnknown() {
-		updateReq.PersistentKeepalive = plan.PersistentKeepalive.ValueInt64()
+func applyDNSField(ctx context.Context, list types.List, target *[]string) {
+	if list.IsNull() || list.IsUnknown() {
+		return
 	}
+	var values []string
+	list.ElementsAs(ctx, &values, false)
+	*target = values
+}
 
-	if !plan.ServerEndpoint.IsNull() && !plan.ServerEndpoint.IsUnknown() {
-		v := plan.ServerEndpoint.ValueString()
-		updateReq.ServerEndpoint = &v
+func applyInt64Field(val types.Int64, target *int64) {
+	if isSetInt64(val) {
+		*target = val.ValueInt64()
 	}
+}
 
-	if !plan.PreUp.IsNull() && !plan.PreUp.IsUnknown() {
-		updateReq.PreUp = plan.PreUp.ValueString()
+func applyStringField(val types.String, target *string) {
+	if isSetString(val) {
+		*target = val.ValueString()
 	}
+}
 
-	if !plan.PostUp.IsNull() && !plan.PostUp.IsUnknown() {
-		updateReq.PostUp = plan.PostUp.ValueString()
+func applyStringPtrField(val types.String, target **string) {
+	if isSetString(val) {
+		v := val.ValueString()
+		*target = &v
 	}
-
-	if !plan.PreDown.IsNull() && !plan.PreDown.IsUnknown() {
-		updateReq.PreDown = plan.PreDown.ValueString()
-	}
-
-	if !plan.PostDown.IsNull() && !plan.PostDown.IsUnknown() {
-		updateReq.PostDown = plan.PostDown.ValueString()
-	}
-
-	if !plan.JC.IsNull() && !plan.JC.IsUnknown() {
-		updateReq.JC = plan.JC.ValueInt64()
-	}
-
-	if !plan.JMin.IsNull() && !plan.JMin.IsUnknown() {
-		updateReq.JMin = plan.JMin.ValueInt64()
-	}
-
-	if !plan.JMax.IsNull() && !plan.JMax.IsUnknown() {
-		updateReq.JMax = plan.JMax.ValueInt64()
-	}
-
-	return updateReq
 }
 
 func mapClientToState(ctx context.Context, apiClient *client.Client, state *clientResourceModel, diags *diag.Diagnostics) {
@@ -515,28 +519,16 @@ func mapClientToState(ctx context.Context, apiClient *client.Client, state *clie
 		state.ServerEndpoint = types.StringNull()
 	}
 
-	// Ensure nil slices become empty lists (not null) for consistency with plan.
-	allowedIPsSlice := apiClient.AllowedIPs
-	if allowedIPsSlice == nil {
-		allowedIPsSlice = []string{}
-	}
-	allowedIPs, d := types.ListValueFrom(ctx, types.StringType, allowedIPsSlice)
-	diags.Append(d...)
-	state.AllowedIPs = allowedIPs
+	state.AllowedIPs = sliceToList(ctx, apiClient.AllowedIPs, diags)
+	state.ServerAllowedIPs = sliceToList(ctx, apiClient.ServerAllowedIPs, diags)
+	state.DNS = sliceToList(ctx, apiClient.DNS, diags)
+}
 
-	serverAllowedIPsSlice := apiClient.ServerAllowedIPs
-	if serverAllowedIPsSlice == nil {
-		serverAllowedIPsSlice = []string{}
+func sliceToList(ctx context.Context, slice []string, diags *diag.Diagnostics) types.List {
+	if slice == nil {
+		slice = []string{}
 	}
-	serverAllowedIPs, d := types.ListValueFrom(ctx, types.StringType, serverAllowedIPsSlice)
+	list, d := types.ListValueFrom(ctx, types.StringType, slice)
 	diags.Append(d...)
-	state.ServerAllowedIPs = serverAllowedIPs
-
-	dnsSlice := apiClient.DNS
-	if dnsSlice == nil {
-		dnsSlice = []string{}
-	}
-	dns, d := types.ListValueFrom(ctx, types.StringType, dnsSlice)
-	diags.Append(d...)
-	state.DNS = dns
+	return list
 }

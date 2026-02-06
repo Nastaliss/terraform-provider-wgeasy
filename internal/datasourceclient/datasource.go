@@ -1,4 +1,5 @@
-package datasource_client
+// Package datasourceclient implements the wgeasy_client and wgeasy_clients data sources.
+package datasourceclient
 
 import (
 	"context"
@@ -20,6 +21,7 @@ type clientDataSourceModel struct {
 	clientModel
 }
 
+// NewClientDataSource creates a new wgeasy_client data source instance.
 func NewClientDataSource() datasource.DataSource {
 	return &clientDataSource{}
 }

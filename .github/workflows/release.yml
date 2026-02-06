@@ -1,0 +1,96 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Import GPG key
+        id: import_gpg
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_FINGERPRINT=$(gpg --list-secret-keys --keyid-format LONG | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+          echo "fingerprint=$GPG_FINGERPRINT" >> "$GITHUB_OUTPUT"
+          # Configure GPG for non-interactive signing
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install ORAS CLI
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to GHCR
+        run: oras login ghcr.io -u ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push OCI artifacts
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          REGISTRY="ghcr.io/nastaliss/opentofu-providers/nastaliss/wgeasy"
+          DIGESTS=()
+
+          for zip in dist/terraform-provider-wgeasy_${VERSION}_*.zip; do
+            [ -f "$zip" ] || continue
+            filename=$(basename "$zip" .zip)
+            # Parse os and arch from: terraform-provider-wgeasy_VERSION_OS_ARCH
+            os=$(echo "$filename" | rev | cut -d'_' -f2 | rev)
+            arch=$(echo "$filename" | rev | cut -d'_' -f1 | rev)
+
+            echo "Pushing platform manifest for ${os}/${arch}..."
+            digest=$(oras push \
+              "${REGISTRY}" \
+              --artifact-type "application/vnd.opentofu.provider-target" \
+              "${zip}:archive/zip" \
+              --artifact-platform "${os}/${arch}" \
+              --format json | jq -r '.reference' | cut -d'@' -f2)
+            DIGESTS+=("${REGISTRY}@${digest}")
+            echo "  -> ${digest}"
+          done
+
+          echo "Creating multi-platform index with ${#DIGESTS[@]} platforms..."
+          oras manifest index create \
+            "${REGISTRY}:${VERSION}" \
+            "${DIGESTS[@]}"
+
+          # oras manifest index create (v1.3.0) does not support --artifact-type,
+          # so we patch the manifest to add the top-level artifactType field.
+          # This can be replaced with --artifact-type once oras v1.4.0 is available.
+          echo "Patching index manifest to set top-level artifactType..."
+          oras manifest fetch "${REGISTRY}:${VERSION}" \
+            | jq '. + {"artifactType": "application/vnd.opentofu.provider"}' \
+            | oras manifest push "${REGISTRY}:${VERSION}" -
+
+          echo "Published ${REGISTRY}:${VERSION}"

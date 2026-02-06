@@ -1,3 +1,4 @@
+// Package client provides the HTTP client for interacting with the wg-easy REST API.
 package client
 
 import (
@@ -46,6 +47,7 @@ type Client struct {
 // normalizing them to a string.
 type FlexibleID string
 
+// UnmarshalJSON implements json.Unmarshaler for FlexibleID.
 func (f *FlexibleID) UnmarshalJSON(data []byte) error {
 	// Try string first.
 	var s string

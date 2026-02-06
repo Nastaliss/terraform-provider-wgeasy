@@ -1,4 +1,5 @@
-package datasource_client
+// Package datasourceclient implements the wgeasy_client and wgeasy_clients data sources.
+package datasourceclient
 
 import (
 	"context"
@@ -19,6 +20,7 @@ type clientsDataSourceModel struct {
 	Clients []clientModel `tfsdk:"clients"`
 }
 
+// NewClientsDataSource creates a new wgeasy_clients data source instance.
 func NewClientsDataSource() datasource.DataSource {
 	return &clientsDataSource{}
 }
@@ -57,7 +59,7 @@ func (d *clientsDataSource) Configure(_ context.Context, req datasource.Configur
 	d.apiClient = apiClient
 }
 
-func (d *clientsDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+func (d *clientsDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
 	apiClients, err := d.apiClient.GetClients()
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading clients", err.Error())

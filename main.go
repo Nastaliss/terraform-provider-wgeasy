@@ -1,3 +1,4 @@
+// Package main is the entry point for the wg-easy Terraform provider.
 package main
 
 import (

@@ -1,3 +1,4 @@
+// Package client provides the HTTP client for interacting with the wg-easy REST API.
 package client
 
 import (
@@ -42,7 +43,7 @@ func TestLogin(t *testing.T) {
 }
 
 func TestLoginFailure(t *testing.T) {
-	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	_, client := setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte("invalid credentials"))
 	})
