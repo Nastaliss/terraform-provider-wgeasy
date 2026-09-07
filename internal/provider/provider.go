@@ -20,9 +20,10 @@ var _ provider.Provider = &wgeasyProvider{}
 type wgeasyProvider struct{}
 
 type wgeasyProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
-	Username types.String `tfsdk:"username"`
-	Password types.String `tfsdk:"password"`
+	Endpoint   types.String `tfsdk:"endpoint"`
+	Username   types.String `tfsdk:"username"`
+	Password   types.String `tfsdk:"password"`
+	TOTPSecret types.String `tfsdk:"totp_secret"`
 }
 
 // New creates a new wg-easy provider instance.
@@ -51,6 +52,11 @@ func (p *wgeasyProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 				Optional:    true,
 				Sensitive:   true,
 			},
+			"totp_secret": schema.StringAttribute{
+				Description: "The base32 TOTP secret used to satisfy two-factor authentication (wg-easy >= 15.4.0). Only required when 2FA is enabled on the account. Can also be set via WGEASY_TOTP_SECRET environment variable.",
+				Optional:    true,
+				Sensitive:   true,
+			},
 		},
 	}
 }
@@ -65,6 +71,7 @@ func (p *wgeasyProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	endpoint := stringValueOrEnv(config.Endpoint, "WGEASY_ENDPOINT")
 	username := stringValueOrEnv(config.Username, "WGEASY_USERNAME")
 	password := stringValueOrEnv(config.Password, "WGEASY_PASSWORD")
+	totpSecret := stringValueOrEnv(config.TOTPSecret, "WGEASY_TOTP_SECRET")
 
 	if endpoint == "" {
 		resp.Diagnostics.AddError(
@@ -88,7 +95,7 @@ func (p *wgeasyProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
-	apiClient, err := client.NewWGEasyClient(endpoint, username, password)
+	apiClient, err := client.NewWGEasyClient(endpoint, username, password, totpSecret)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create API client", err.Error())
 		return

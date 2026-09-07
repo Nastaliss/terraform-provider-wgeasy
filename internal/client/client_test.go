@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/pquerna/otp/totp"
 )
 
 func setupTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *WGEasyClient) {
@@ -13,7 +16,7 @@ func setupTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, 
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	client, err := NewWGEasyClient(server.URL, "admin", "secret")
+	client, err := NewWGEasyClient(server.URL, "admin", "secret", "")
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -22,12 +25,14 @@ func setupTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, 
 
 func TestLogin(t *testing.T) {
 	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/session" && r.Method == http.MethodPost {
+		if r.URL.Path == "/api/auth/password" && r.Method == http.MethodPost {
 			var body map[string]interface{}
 			json.NewDecoder(r.Body).Decode(&body)
 			if body["username"] == "admin" && body["password"] == "secret" && body["remember"] == true {
 				http.SetCookie(w, &http.Cookie{Name: "session", Value: "test-session"})
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"status":"success"}`))
 				return
 			}
 			w.WriteHeader(http.StatusUnauthorized)
@@ -39,6 +44,49 @@ func TestLogin(t *testing.T) {
 	err := client.login()
 	if err != nil {
 		t.Fatalf("expected successful login, got: %v", err)
+	}
+}
+
+// TestLoginLegacyFallback ensures we fall back to POST /api/session for
+// wg-easy < 15.4.0, which does not expose /api/auth/password.
+func TestLoginLegacyFallback(t *testing.T) {
+	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/auth/password" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Path == "/api/session" && r.Method == http.MethodPost {
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "legacy"})
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	if err := client.login(); err != nil {
+		t.Fatalf("expected successful legacy login, got: %v", err)
+	}
+}
+
+// TestLoginTOTPRequired ensures a 200 response with a non-success status
+// (e.g. 2FA required) is treated as a failed login.
+func TestLoginTOTPRequired(t *testing.T) {
+	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/auth/password" && r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"TOTP_REQUIRED"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	err := client.login()
+	if err == nil {
+		t.Fatal("expected error when login is not completed")
+	}
+	if _, ok := err.(*AuthenticationError); !ok {
+		t.Fatalf("expected AuthenticationError, got: %T", err)
 	}
 }
 
@@ -54,6 +102,48 @@ func TestLoginFailure(t *testing.T) {
 	}
 	if _, ok := err.(*AuthenticationError); !ok {
 		t.Fatalf("expected AuthenticationError, got: %T", err)
+	}
+}
+
+// TestLogin2FASuccess verifies the full two-factor flow: the password step
+// returns TOTP_REQUIRED, and the client computes a valid TOTP code from the
+// configured secret and completes login via /api/auth/verify-2fa.
+func TestLogin2FASuccess(t *testing.T) {
+	const secret = "JBSWY3DPEHPK3PXP" // valid base32 test seed
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/password":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"TOTP_REQUIRED"}`))
+		case "/api/auth/verify-2fa":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			expected, err := totp.GenerateCode(secret, time.Now())
+			if err != nil {
+				t.Fatalf("generating expected code: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if body["totpCode"] != expected {
+				t.Errorf("expected totpCode %q, got %q", expected, body["totpCode"])
+				w.Write([]byte(`{"status":"INVALID_TOTP_CODE"}`))
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "authed"})
+			w.Write([]byte(`{"status":"success"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewWGEasyClient(server.URL, "admin", "secret", secret)
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	if err := client.login(); err != nil {
+		t.Fatalf("expected successful 2FA login, got: %v", err)
 	}
 }
 

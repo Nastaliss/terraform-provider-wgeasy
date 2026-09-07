@@ -10,6 +10,9 @@ import (
 	"net/http/cookiejar"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/pquerna/otp/totp"
 )
 
 // WGEasyClient is the HTTP client for the wg-easy REST API.
@@ -17,13 +20,16 @@ type WGEasyClient struct {
 	endpoint   string
 	username   string
 	password   string
+	totpSecret string // Base32 TOTP secret for 2FA logins (wg-easy >= 15.4.0); empty if 2FA is disabled.
 	httpClient *http.Client
 	loginMu    sync.Mutex // Serializes login attempts
 	loggedIn   bool       // Tracks if we've successfully logged in
 }
 
 // NewWGEasyClient creates a new API client for wg-easy.
-func NewWGEasyClient(endpoint, username, password string) (*WGEasyClient, error) {
+// totpSecret is the base32 TOTP secret used to satisfy two-factor
+// authentication on wg-easy >= 15.4.0; pass "" when 2FA is not enabled.
+func NewWGEasyClient(endpoint, username, password, totpSecret string) (*WGEasyClient, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating cookie jar: %w", err)
@@ -33,13 +39,30 @@ func NewWGEasyClient(endpoint, username, password string) (*WGEasyClient, error)
 		endpoint:   strings.TrimRight(endpoint, "/"),
 		username:   username,
 		password:   password,
+		totpSecret: strings.ReplaceAll(totpSecret, " ", ""),
 		httpClient: &http.Client{
 			Jar: jar,
 		},
 	}, nil
 }
 
-// login authenticates with the wg-easy API via POST /api/session.
+// Login endpoints. wg-easy >= 15.4.0 moved password login from POST /api/session
+// to POST /api/auth/password (Nuxt v4 rewrite that added OAuth/2FA). We try the
+// new endpoint first and fall back to the legacy one for wg-easy < 15.4.0.
+const (
+	authPasswordPath  = "/api/auth/password" //#nosec G101 -- API route path, not a credential
+	authVerify2FAPath = "/api/auth/verify-2fa"
+	legacySessionPath = "/api/session"
+)
+
+// loginResponse is the JSON body returned by POST /api/auth/password on
+// wg-easy >= 15.4.0. It returns HTTP 200 even when login is not complete
+// (e.g. 2FA required), so the status field must be checked.
+type loginResponse struct {
+	Status string `json:"status"`
+}
+
+// login authenticates with the wg-easy API.
 func (c *WGEasyClient) login() error {
 	body, err := json.Marshal(map[string]interface{}{
 		"username": c.username,
@@ -50,9 +73,98 @@ func (c *WGEasyClient) login() error {
 		return fmt.Errorf("marshaling login request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.endpoint+"/api/session", bytes.NewReader(body))
+	// Try the wg-easy >= 15.4.0 endpoint, falling back to the legacy path on 404.
+	resp, err := c.postLogin(authPasswordPath, body)
 	if err != nil {
-		return fmt.Errorf("creating login request: %w", err)
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		_ = resp.Body.Close()
+		resp, err = c.postLogin(legacySessionPath, body)
+		if err != nil {
+			return err
+		}
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return &AuthenticationError{
+			Message: fmt.Sprintf("status %d: %s", resp.StatusCode, string(respBody)),
+		}
+	}
+
+	// wg-easy >= 15.4.0 returns HTTP 200 with a status field even for
+	// non-success outcomes (e.g. "TOTP_REQUIRED", "INVALID_TOTP_CODE").
+	// The legacy endpoint has no status field, so only branch when it is
+	// present and not "success".
+	if len(respBody) > 0 {
+		var lr loginResponse
+		if err := json.Unmarshal(respBody, &lr); err == nil && lr.Status != "" && lr.Status != "success" {
+			if lr.Status == "TOTP_REQUIRED" {
+				return c.verify2FA()
+			}
+			return &AuthenticationError{
+				Message: fmt.Sprintf("login not completed: %s", lr.Status),
+			}
+		}
+	}
+
+	return nil
+}
+
+// verify2FA completes a two-factor login by computing the current TOTP code
+// from the configured secret and posting it to /api/auth/verify-2fa. The
+// pending-login state is carried by the session cookie set during the
+// password step.
+func (c *WGEasyClient) verify2FA() error {
+	if c.totpSecret == "" {
+		return &AuthenticationError{
+			Message: "two-factor authentication is required but no totp_secret was configured",
+		}
+	}
+
+	code, err := totp.GenerateCode(c.totpSecret, time.Now())
+	if err != nil {
+		return &AuthenticationError{
+			Message: fmt.Sprintf("generating TOTP code (check totp_secret is a valid base32 seed): %v", err),
+		}
+	}
+
+	body, err := json.Marshal(map[string]interface{}{"totpCode": code})
+	if err != nil {
+		return fmt.Errorf("marshaling 2FA request: %w", err)
+	}
+
+	resp, err := c.postLogin(authVerify2FAPath, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return &AuthenticationError{
+			Message: fmt.Sprintf("2FA verification failed: status %d: %s", resp.StatusCode, string(respBody)),
+		}
+	}
+
+	var lr loginResponse
+	if err := json.Unmarshal(respBody, &lr); err == nil && lr.Status != "success" {
+		return &AuthenticationError{
+			Message: fmt.Sprintf("2FA verification not completed: %s", lr.Status),
+		}
+	}
+
+	return nil
+}
+
+// postLogin issues a single login POST to the given path.
+func (c *WGEasyClient) postLogin(path string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, c.endpoint+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating login request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -60,18 +172,9 @@ func (c *WGEasyClient) login() error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("login request failed: %w", err)
+		return nil, fmt.Errorf("login request failed: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return &AuthenticationError{
-			Message: fmt.Sprintf("status %d: %s", resp.StatusCode, string(respBody)),
-		}
-	}
-
-	return nil
+	return resp, nil
 }
 
 // ensureLoggedIn performs login if not already authenticated.

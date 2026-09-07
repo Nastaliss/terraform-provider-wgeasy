@@ -37,6 +37,10 @@ provider "wgeasy" {
   endpoint = "http://localhost:51821"
   username = "admin"
   password = "secret"
+
+  # Only if the account has 2FA enabled (wg-easy >= 15.4.0). See the
+  # "Two-factor authentication" note below before using this - it weakens 2FA.
+  # totp_secret = "JBSWY3DPEHPK3PXP"
 }
 ```
 
@@ -44,11 +48,51 @@ provider "wgeasy" {
 
 All provider arguments can be set via environment variables:
 
-| Argument   | Environment Variable  |
-|------------|----------------------|
-| `endpoint` | `WGEASY_ENDPOINT`    |
-| `username` | `WGEASY_USERNAME`    |
-| `password` | `WGEASY_PASSWORD`    |
+| Argument      | Environment Variable  |
+|---------------|----------------------|
+| `endpoint`    | `WGEASY_ENDPOINT`    |
+| `username`    | `WGEASY_USERNAME`    |
+| `password`    | `WGEASY_PASSWORD`    |
+| `totp_secret` | `WGEASY_TOTP_SECRET` |
+
+## Authentication notes (wg-easy ≥ 15.4.0)
+
+wg-easy 15.4.0 rewrote its API (Nuxt v4). Password login moved from
+`POST /api/session` to `POST /api/auth/password`, with an optional 2FA step at
+`POST /api/auth/verify-2fa`. This provider targets the new endpoints and falls
+back to the legacy `/api/session` for wg-easy < 15.4.0, so it works against both.
+
+### There is no service account / API token
+
+wg-easy has **no API-token or service-account mechanism**, and it is effectively
+**single-admin**:
+
+- The first user created during setup is the only `ADMIN`; any subsequent
+  password-created user is a `CLIENT`, and there is no UI or API to create
+  additional users. (OAuth auto-registration can mint more admins, but OAuth has
+  no non-interactive flow usable by Terraform.)
+
+As a result, Terraform must authenticate as the **same admin account** a human
+uses. There is no way to isolate automation behind a dedicated credential.
+
+**Recommended setup:** protect the wg-easy API at the network layer (restrict it
+to the CI runner's IP / an internal network / behind a VPN) and treat that
+network boundary as the real second factor for automation. Store `password` in
+your CI secret store, not in `.tf` files.
+
+### Two-factor authentication (`totp_secret`)
+
+If the admin account has 2FA enabled, set `totp_secret` to the base32 seed
+generated during 2FA setup. The provider derives the current TOTP code itself and
+completes the login; without it, a 2FA-protected account cannot authenticate.
+
+> ⚠️ **This weakens 2FA.** Because there is only one admin account (see above),
+> the TOTP secret has to live next to the password in the same CI secret store.
+> Both "factors" then share one location, so anyone who compromises that store
+> has both — this is effectively single-factor for the automation path. Only use
+> `totp_secret` when an organizational policy forces 2FA on every account. When
+> you control the account, prefer leaving 2FA off on the admin used by Terraform
+> and relying on the network restriction above.
 
 ## Resources
 
